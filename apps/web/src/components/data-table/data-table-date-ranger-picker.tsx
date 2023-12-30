@@ -6,15 +6,16 @@ import { format } from "date-fns";
 import { Calendar as CalendarIcon } from "lucide-react";
 import type { DateRange } from "react-day-picker";
 
-import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
 import {
+  Button,
+  Calendar,
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
+} from "@openstatus/ui";
+
 import useUpdateSearchParams from "@/hooks/use-update-search-params";
-import { cn } from "@/lib/utils";
+import { cn, manipulateDate } from "@/lib/utils";
 
 type DataTableDateRangePicker = React.HTMLAttributes<HTMLDivElement>;
 
@@ -49,7 +50,7 @@ export function DataTableDateRangePicker({
             id="date"
             variant="outline"
             className={cn(
-              "w-[250px] justify-start text-left font-normal",
+              "w-[260px] justify-start text-left font-normal",
               !date && "text-muted-foreground",
             )}
           >
@@ -74,11 +75,13 @@ export function DataTableDateRangePicker({
             mode="range"
             defaultMonth={date?.from}
             selected={date}
-            onSelect={(e) => {
-              setDate(e);
+            onSelect={(value) => {
+              setDate(value);
+              const { fromDate, toDate } = manipulateDate(value);
+
               const searchParams = updateSearchParams({
-                fromDate: e?.from?.getTime() || null,
-                toDate: e?.to?.getTime() || null,
+                fromDate,
+                toDate,
               });
               router.replace(`${pathname}?${searchParams}`);
             }}

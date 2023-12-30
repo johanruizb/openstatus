@@ -4,35 +4,49 @@ import * as React from "react";
 import Link from "next/link";
 import { cva } from "class-variance-authority";
 import { format } from "date-fns";
-import { Eye, Info } from "lucide-react";
+import { ChevronRight, Eye, Info } from "lucide-react";
 
+import type {
+  StatusReport,
+  StatusReportUpdate,
+} from "@openstatus/db/src/schema";
 import type { Monitor } from "@openstatus/tinybird";
-
 import {
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
-} from "@/components/ui/hover-card";
-import { Separator } from "@/components/ui/separator";
-import {
+  Separator,
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/components/ui/tooltip";
+} from "@openstatus/ui";
+
+import {
+  addBlackListInfo,
+  areDatesEqualByDayMonthYear,
+  getStatus,
+  getTotalUptimeString,
+} from "@/lib/tracker";
 
 // What would be cool is tracker that turn from green to red  depending on the number of errors
-const tracker = cva("h-10 w-1.5 sm:w-2 rounded-full md:w-2.5", {
+const tracker = cva("h-10 rounded-full flex-1", {
   variants: {
     variant: {
-      up: "bg-green-500 data-[state=open]:bg-green-600",
-      down: "bg-red-500 data-[state=open]:bg-red-600",
-      degraded: "bg-yellow-500 data-[state=open]:bg-yellow-600",
-      empty: "bg-muted-foreground/20",
+      up: "bg-green-500/90 data-[state=open]:bg-green-500",
+      down: "bg-red-500/90 data-[state=open]:bg-red-500",
+      degraded: "bg-yellow-500/90 data-[state=open]:bg-yellow-500",
+      empty: "bg-muted-foreground/20 data-[state=open]:bg-muted-foreground/30",
+      blacklist: "bg-green-500/80 data-[state=open]:bg-green-500",
+    },
+    report: {
+      0: "",
+      30: "bg-gradient-to-t from-blue-500/90 hover:from-blue-500 from-30% to-transparent to-30%",
     },
   },
   defaultVariants: {
     variant: "empty",
+    report: 0,
   },
 });
 
@@ -42,11 +56,9 @@ interface TrackerProps {
   id: string | number;
   name: string;
   description?: string;
-  /**
-   * Maximium length of the data array
-   */
-  maxSize?: number;
   context?: "play" | "status-page"; // TODO: we might need to extract those two different use cases - for now it's ok I'd say.
+  timezone?: string;
+  reports?: (StatusReport & { statusReportUpdates: StatusReportUpdate[] })[];
 }
 
 export function Tracker({
@@ -54,49 +66,42 @@ export function Tracker({
   url,
   id,
   name,
-  maxSize = 35,
-  context = "play",
+  context = "status-page",
   description,
+  reports,
 }: TrackerProps) {
-  const slicedData = data.slice(0, maxSize).reverse();
-  const placeholderData: null[] = Array(maxSize).fill(null);
-
-  const reducedData = slicedData.reduce(
-    (prev, curr) => {
-      prev.ok += curr.ok;
-      prev.count += curr.count;
-      return prev;
-    },
-    {
-      count: 0,
-      ok: 0,
-    }
-  );
-
-  const uptime =
-    reducedData.count !== 0
-      ? `${((reducedData.ok / reducedData.count) * 100).toFixed(2)}% uptime`
-      : "";
+  const uptime = getTotalUptimeString(data);
+  const _data = addBlackListInfo(data);
 
   return (
-    <div className="mx-auto max-w-max">
-      <div className="mb-1 flex justify-between text-sm sm:mb-2">
+    <div className="flex flex-col">
+      <div className="mb-2 flex justify-between text-sm">
         <div className="flex items-center gap-2">
-          <p className="text-foreground font-semibold">{name}</p>
-          <MoreInfo {...{ url, id, context, description }} />
+          <p className="text-foreground line-clamp-1 font-semibold">{name}</p>
+          {description ? (
+            <MoreInfo {...{ url, id, context, description }} />
+          ) : null}
         </div>
-        <p className="text-muted-foreground font-light">{uptime}</p>
+        <p className="text-muted-foreground shrink-0 font-light">{uptime}</p>
       </div>
-      <div className="relative">
-        <div className="z-[-1] flex gap-0.5">
-          {placeholderData.map((_, i) => {
-            return <div key={i} className={tracker({ variant: "empty" })} />;
-          })}
-        </div>
-        <div className="absolute right-0 top-0 flex gap-0.5">
-          {slicedData.map((props) => {
+      <div className="relative h-full w-full">
+        <div className="flex flex-row-reverse gap-px sm:gap-0.5">
+          {_data.map((props, i) => {
+            const dateReports = reports?.filter((report) => {
+              const firstStatusReportUpdate = report.statusReportUpdates.sort(
+                (a, b) => a.date.getTime() - b.date.getTime(),
+              )?.[0];
+
+              if (!firstStatusReportUpdate) return false;
+
+              return areDatesEqualByDayMonthYear(
+                firstStatusReportUpdate.date,
+                new Date(props.day),
+              );
+            });
+
             return (
-              <Bar key={props.cronTimestamp} context={context} {...props} />
+              <Bar key={i} context={context} reports={dateReports} {...props} />
             );
           })}
         </div>
@@ -141,20 +146,31 @@ const MoreInfo = ({
   );
 };
 
+type BarProps = Monitor & { blacklist?: string } & Pick<
+    TrackerProps,
+    "context" | "reports"
+  >;
+
 const Bar = ({
   count,
   ok,
   avgLatency,
-  cronTimestamp,
+  day,
+  blacklist,
   context,
-}: Monitor & Pick<TrackerProps, "context">) => {
+  reports,
+}: BarProps) => {
   const [open, setOpen] = React.useState(false);
   const ratio = ok / count;
-  // FIX: this is an easy way to detect if cronTimestamps have been aggregated
-  const isMidnight = String(cronTimestamp).endsWith("00000");
+  const cronTimestamp = new Date(day).getTime();
   const date = new Date(cronTimestamp);
-  const toDate = isMidnight ? date.setDate(date.getDate() + 1) : cronTimestamp;
-  const dateFormat = isMidnight ? "dd/MM/yy" : "dd/MM/yy HH:mm";
+  const toDate = date.setDate(date.getDate() + 1);
+  const dateFormat = "dd/MM/yy";
+
+  const className = tracker({
+    report: reports && reports.length > 0 ? 30 : undefined,
+    variant: blacklist ? "blacklist" : getStatus(ratio).variant,
+  });
 
   return (
     <HoverCard
@@ -164,53 +180,64 @@ const Bar = ({
       onOpenChange={setOpen}
     >
       <HoverCardTrigger onClick={() => setOpen(true)} asChild>
-        <div className={tracker({ variant: getStatus(ratio).variant })} />
+        <div className={className} />
       </HoverCardTrigger>
       <HoverCardContent side="top" className="w-64">
-        <div className="flex justify-between">
-          <p className="text-sm font-semibold">{getStatus(ratio).label}</p>
-          {context === "play" ? (
-            <Link
-              href={`/monitor/openstatusPing?fromDate=${cronTimestamp}&toDate=${toDate}`}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <Eye className="h-4 w-4" />
-            </Link>
-          ) : null}
-        </div>
-        <div className="flex justify-between">
-          <p className="text-xs font-light">
-            {format(new Date(cronTimestamp), dateFormat)}
-          </p>
-          <p className="text-muted-foreground text-xs">
-            avg. <span className="font-mono">{avgLatency}ms</span>
-          </p>
-        </div>
-        <Separator className="my-1.5" />
-        <div className="grid grid-cols-2">
-          <p className="text-left text-xs">
-            <span className="font-mono text-green-600">{count}</span>{" "}
-            <span className="text-muted-foreground font-light">
-              total requests
-            </span>
-          </p>
-          <p className="text-right text-xs">
-            <span className="font-mono text-red-600">{count - ok}</span>{" "}
-            <span className="text-muted-foreground font-light">
-              failed requests
-            </span>
-          </p>
-        </div>
+        {blacklist ? (
+          <p className="text-muted-foreground text-xs">{blacklist}</p>
+        ) : (
+          <>
+            <div className="flex justify-between">
+              <p className="text-sm font-semibold">{getStatus(ratio).label}</p>
+              {context === "play" ? (
+                <Link
+                  href={`/monitor/1?fromDate=${cronTimestamp}&toDate=${toDate}`}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <Eye className="h-4 w-4" />
+                </Link>
+              ) : null}
+            </div>
+            <ul className="my-1.5">
+              {reports?.map((report) => (
+                <li key={report.id} className="text-muted-foreground text-sm">
+                  <Link
+                    // TODO: include setPrefixUrl for local development
+                    href={`./incidents/${report.id}`}
+                    className="hover:text-foreground group flex items-center justify-between gap-2"
+                  >
+                    <span className="truncate">{report.title}</span>
+                    <ChevronRight className="h-4 w-4" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-between">
+              <p className="text-xs font-light">
+                {format(new Date(cronTimestamp), dateFormat)}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                avg. <span className="font-mono">{avgLatency}ms</span>
+              </p>
+            </div>
+            <Separator className="my-1.5" />
+            <div className="grid grid-cols-2">
+              <p className="text-left text-xs">
+                <span className="font-mono text-green-600">{count}</span>{" "}
+                <span className="text-muted-foreground font-light">
+                  total requests
+                </span>
+              </p>
+              <p className="text-right text-xs">
+                <span className="font-mono text-red-600">{count - ok}</span>{" "}
+                <span className="text-muted-foreground font-light">
+                  failed requests
+                </span>
+              </p>
+            </div>
+          </>
+        )}
       </HoverCardContent>
     </HoverCard>
   );
-};
-
-// FIXME this is a temporary solution
-const getStatus = (
-  ratio: number
-): { label: string; variant: "up" | "degraded" | "down" } => {
-  if (ratio >= 0.98) return { label: "Operational", variant: "up" };
-  if (ratio >= 0.5) return { label: "Degraded", variant: "degraded" };
-  return { label: "Downtime", variant: "down" };
 };

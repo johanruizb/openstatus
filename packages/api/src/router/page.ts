@@ -1,287 +1,278 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
-import { analytics, trackAnalytics } from "@openstatus/analytics";
-import { and, eq, inArray } from "@openstatus/db";
+import { and, eq, inArray, or, sql } from "@openstatus/db";
 import {
-  insertPageSchemaWithMonitors,
+  insertPageSchema,
   monitor,
   monitorsToPages,
+  monitorsToStatusReport,
   page,
-  selectIncidentSchema,
-  selectMonitorSchema,
-  selectPageSchema,
-  user,
-  usersToWorkspaces,
+  pagesToStatusReports,
+  selectPublicPageSchemaWithRelation,
+  statusReport,
   workspace,
 } from "@openstatus/db/src/schema";
 import { allPlans } from "@openstatus/plans";
 
+import { trackNewPage } from "../analytics";
 import { createTRPCRouter, protectedProcedure, publicProcedure } from "../trpc";
 
-const limit = allPlans.free.limits["status-pages"];
-
-// TODO: deletePageById - updatePageById
 export const pageRouter = createTRPCRouter({
-  createPage: protectedProcedure
-    .input(insertPageSchemaWithMonitors)
-    .mutation(async (opts) => {
-      if (!opts.input.workspaceSlug) return;
-      const currentWorkspace = await opts.ctx.db
-        .select()
-        .from(workspace)
-        .where(eq(workspace.slug, opts.input.workspaceSlug))
-        .get();
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentWorkspace.id))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
+  create: protectedProcedure.input(insertPageSchema).mutation(async (opts) => {
+    const { monitors, workspaceId, id, ...pageProps } = opts.input;
 
-      if (!result) return;
-      const { monitors, workspaceId, workspaceSlug, id, ...pageInput } =
-        opts.input;
+    const pageNumbers = (
+      await opts.ctx.db.query.page.findMany({
+        where: eq(page.workspaceId, opts.ctx.workspace.id),
+      })
+    ).length;
 
-      const pageNumbers = (
-        await opts.ctx.db.query.page.findMany({
-          where: eq(page.workspaceId, currentWorkspace.id),
-        })
-      ).length;
+    const limit = allPlans[opts.ctx.workspace.plan].limits["status-pages"];
 
-      // the user has reached the limits
-      if (pageNumbers >= limit) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "You reached your status-page limits.",
-        });
-      }
-
-      const newPage = await opts.ctx.db
-        .insert(page)
-        .values({ workspaceId: currentWorkspace.id, ...pageInput })
-        .returning()
-        .get();
-      if (monitors && monitors.length > 0) {
-        // We should make sure the user has access to the monitors
-        const allMonitors = await opts.ctx.db.query.monitor.findMany({
-          where: inArray(monitor.id, monitors),
-        });
-        const values = allMonitors.map((monitor) => ({
-          monitorId: monitor.id,
-          pageId: newPage.id,
-        }));
-        await opts.ctx.db.insert(monitorsToPages).values(values).run();
-      }
-
-      await analytics.identify(result.users_to_workspaces.userId, {
-        userId: result.users_to_workspaces.userId,
+    // the user has reached the limits
+    if (pageNumbers >= limit) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You reached your status-page limits.",
       });
-      await trackAnalytics({
-        event: "Page Created",
-        slug: newPage.slug,
-      });
-    }),
+    }
 
-  getPageByID: protectedProcedure
+    const newPage = await opts.ctx.db
+      .insert(page)
+      .values({ workspaceId: opts.ctx.workspace.id, ...pageProps })
+      .returning()
+      .get();
+
+    if (Boolean(monitors.length)) {
+      // We should make sure the user has access to the monitors
+      const allMonitors = await opts.ctx.db.query.monitor.findMany({
+        where: and(
+          inArray(monitor.id, monitors),
+          eq(monitor.workspaceId, opts.ctx.workspace.id),
+        ),
+      });
+
+      const values = allMonitors.map((monitor) => ({
+        monitorId: monitor.id,
+        pageId: newPage.id,
+      }));
+
+      await opts.ctx.db.insert(monitorsToPages).values(values).run();
+    }
+
+    await trackNewPage(opts.ctx.user, { slug: newPage.slug });
+
+    return newPage;
+  }),
+  getPageById: protectedProcedure
     .input(z.object({ id: z.number() }))
     .query(async (opts) => {
-      const currentUser = await opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .get();
-
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.userId, currentUser.id))
-        .all();
-      const workspaceIds = result.map((workspace) => workspace.workspaceId);
-
       return await opts.ctx.db.query.page.findFirst({
         where: and(
           eq(page.id, opts.input.id),
-          inArray(page.workspaceId, workspaceIds),
+          eq(page.workspaceId, opts.ctx.workspace.id),
         ),
-        with: { monitorsToPages: { with: { monitor: true } }, incidents: true },
-      });
-    }),
-  updatePage: protectedProcedure
-    .input(insertPageSchemaWithMonitors)
-    .mutation(async (opts) => {
-      const { monitors, workspaceSlug, ...pageInput } = opts.input;
-      if (!pageInput.id) return;
-      const currentPage = await opts.ctx.db
-        .update(page)
-        .set(pageInput)
-        .where(eq(page.id, pageInput.id))
-        .returning()
-        .get();
-
-      // TODO: optimize!
-      const currentMonitorsToPages = await opts.ctx.db
-        .select()
-        .from(monitorsToPages)
-        .where(eq(monitorsToPages.pageId, currentPage.id))
-        .all();
-
-      const currentMonitorsToPagesIds = currentMonitorsToPages.map(
-        ({ monitorId }) => monitorId,
-      );
-
-      const removedMonitors = currentMonitorsToPagesIds.filter(
-        (x) => !monitors?.includes(x),
-      );
-
-      const addedMonitors = monitors?.filter(
-        (x) => !currentMonitorsToPagesIds?.includes(x),
-      );
-
-      if (addedMonitors && addedMonitors.length > 0) {
-        const values = addedMonitors.map((monitorId) => ({
-          monitorId: monitorId,
-          pageId: currentPage.id,
-        }));
-
-        await opts.ctx.db.insert(monitorsToPages).values(values).run();
-      }
-
-      if (removedMonitors && removedMonitors.length > 0) {
-        await opts.ctx.db
-          .delete(monitorsToPages)
-          .where(
-            and(
-              eq(monitorsToPages.pageId, currentPage.id),
-              inArray(monitorsToPages.monitorId, removedMonitors),
-            ),
-          )
-          .run();
-      }
-    }),
-  deletePage: protectedProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(async (opts) => {
-      // TODO: this looks not very affective
-      const currentUser = await opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .get();
-
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.userId, currentUser.id))
-        .all();
-      const workspaceIds = result.map((workspace) => workspace.workspaceId);
-      // two queries - can we reduce it?
-
-      const pageToDelete = await opts.ctx.db
-        .select()
-        .from(page)
-        .where(
-          and(
-            eq(page.id, opts.input.id),
-            inArray(page.workspaceId, workspaceIds),
-          ),
-        )
-        .get();
-      if (!pageToDelete) return;
-
-      await opts.ctx.db.delete(page).where(eq(page.id, pageToDelete.id)).run();
-    }),
-  getPagesByWorkspace: protectedProcedure
-    .input(z.object({ workspaceSlug: z.string() }))
-    .query(async (opts) => {
-      const currentUser = await opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .get();
-
-      const currentWorkspace = await opts.ctx.db
-        .select()
-        .from(workspace)
-        .where(eq(workspace.slug, opts.input.workspaceSlug))
-        .get();
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(
-          and(
-            eq(usersToWorkspaces.userId, currentUser.id),
-            eq(usersToWorkspaces.workspaceId, currentWorkspace.id),
-          ),
-        )
-        .all();
-      if (!result) return;
-
-      return opts.ctx.db.query.page.findMany({
-        where: and(eq(page.workspaceId, currentWorkspace.id)),
         with: {
           monitorsToPages: { with: { monitor: true } },
         },
       });
     }),
 
+  update: protectedProcedure.input(insertPageSchema).mutation(async (opts) => {
+    const { monitors, ...pageInput } = opts.input;
+    if (!pageInput.id) return;
+
+    const currentPage = await opts.ctx.db
+      .update(page)
+      .set({ ...pageInput, updatedAt: new Date() })
+      .where(
+        and(
+          eq(page.id, pageInput.id),
+          eq(page.workspaceId, opts.ctx.workspace.id),
+        ),
+      )
+      .returning()
+      .get();
+
+    const currentMonitorsToPages = await opts.ctx.db
+      .select()
+      .from(monitorsToPages)
+      .where(eq(monitorsToPages.pageId, currentPage.id))
+      .all();
+
+    const removedMonitors = currentMonitorsToPages
+      .map(({ monitorId }) => monitorId)
+      .filter((x) => !monitors?.includes(x));
+
+    if (Boolean(removedMonitors.length)) {
+      await opts.ctx.db
+        .delete(monitorsToPages)
+        .where(
+          and(
+            inArray(monitorsToPages.monitorId, removedMonitors),
+            eq(monitorsToPages.pageId, currentPage.id),
+          ),
+        );
+    }
+
+    const addedMonitors = monitors.filter(
+      (x) =>
+        !currentMonitorsToPages.map(({ monitorId }) => monitorId)?.includes(x),
+    );
+
+    if (Boolean(addedMonitors.length)) {
+      const values = addedMonitors.map((monitorId) => ({
+        pageId: currentPage.id,
+        monitorId,
+      }));
+
+      await opts.ctx.db.insert(monitorsToPages).values(values).run();
+    }
+  }),
+  delete: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async (opts) => {
+      await opts.ctx.db
+        .delete(page)
+        .where(
+          and(
+            eq(page.id, opts.input.id),
+            eq(page.workspaceId, opts.ctx.workspace.id),
+          ),
+        )
+        .run();
+    }),
+  getPagesByWorkspace: protectedProcedure.query(async (opts) => {
+    return opts.ctx.db.query.page.findMany({
+      where: and(eq(page.workspaceId, opts.ctx.workspace.id)),
+      with: {
+        monitorsToPages: { with: { monitor: true } },
+      },
+    });
+  }),
+
   // public if we use trpc hooks to get the page from the url
   getPageBySlug: publicProcedure
-    .input(z.object({ slug: z.string() }))
+    .input(z.object({ slug: z.string().toLowerCase() }))
     .query(async (opts) => {
+      console.log(opts.input.slug);
       const result = await opts.ctx.db.query.page.findFirst({
-        where: eq(page.slug, opts.input.slug),
-        with: { incidents: true },
+        where: sql`lower(${page.slug}) = ${opts.input.slug} OR  lower(${page.customDomain}) = ${opts.input.slug}`,
       });
 
       if (!result) {
         return;
       }
 
+      const workspaceResult = await opts.ctx.db
+        .select()
+        .from(workspace)
+        .where(eq(workspace.id, result.workspaceId))
+        .get();
+
       // FIXME: There is probably a better way to do this
       const monitorsToPagesResult = await opts.ctx.db
         .select()
         .from(monitorsToPages)
-        .where(eq(monitorsToPages.pageId, result.id))
+        .leftJoin(monitor, eq(monitorsToPages.monitorId, monitor.id))
+        .where(
+          // make sur only active monitors are returned!
+          and(eq(monitorsToPages.pageId, result.id), eq(monitor.active, true)),
+        )
         .all();
 
       const monitorsId = monitorsToPagesResult.map(
-        (monitor) => monitor.monitorId,
+        ({ monitors_to_pages }) => monitors_to_pages.monitorId,
       );
 
-      const selectPageSchemaWithRelation = selectPageSchema.extend({
-        monitors: z.array(selectMonitorSchema),
-        incidents: z.array(selectIncidentSchema),
-      });
+      const monitorsToStatusReportResult =
+        monitorsId.length > 0
+          ? await opts.ctx.db
+              .select()
+              .from(monitorsToStatusReport)
+              .where(inArray(monitorsToStatusReport.monitorId, monitorsId))
+              .all()
+          : [];
 
-      if (monitorsId.length === 0) {
-        return selectPageSchemaWithRelation.parse({ ...result, monitors: [] });
-      } // no monitors for that page
-
-      const monitors = await opts.ctx.db
+      const statusReportsToPagesResult = await opts.ctx.db
         .select()
-        .from(monitor)
-        .where(and(inArray(monitor.id, monitorsId), eq(monitor.active, true))) // REMINDER: this is hardcoded
+        .from(pagesToStatusReports)
+        .where(eq(pagesToStatusReports.pageId, result.id))
         .all();
 
-      return selectPageSchemaWithRelation.parse({ ...result, monitors });
+      const monitorStatusReportIds = monitorsToStatusReportResult.map(
+        ({ statusReportId }) => statusReportId,
+      );
+
+      const pageStatusReportIds = statusReportsToPagesResult.map(
+        ({ statusReportId }) => statusReportId,
+      );
+
+      const statusReportIds = Array.from(
+        new Set([...monitorStatusReportIds, ...pageStatusReportIds]),
+      );
+
+      const statusReports =
+        statusReportIds.length > 0
+          ? await opts.ctx.db.query.statusReport.findMany({
+              where: or(inArray(statusReport.id, statusReportIds)),
+              with: {
+                statusReportUpdates: true,
+                monitorsToStatusReports: { with: { monitor: true } },
+                pagesToStatusReports: true,
+              },
+            })
+          : [];
+
+      // TODO: monitorsToPagesResult has the result already, no need to query again
+      const monitors =
+        monitorsId.length > 0
+          ? await opts.ctx.db
+              .select()
+              .from(monitor)
+              .where(
+                and(inArray(monitor.id, monitorsId), eq(monitor.active, true)), // REMINDER: this is hardcoded
+              )
+              .all()
+          : [];
+
+      return selectPublicPageSchemaWithRelation.parse({
+        ...result,
+        monitors,
+        statusReports,
+        workspacePlan: workspaceResult?.plan,
+      });
     }),
 
   getSlugUniqueness: protectedProcedure
-    .input(z.object({ slug: z.string() }))
+    .input(z.object({ slug: z.string().toLowerCase() }))
     .query(async (opts) => {
       // had filter on some words we want to keep for us
-      if (["api", "app", "www", "docs"].includes(opts.input.slug)) {
+      if (
+        ["api", "app", "www", "docs", "checker", "time"].includes(
+          opts.input.slug,
+        )
+      ) {
         return false;
       }
       const result = await opts.ctx.db.query.page.findMany({
-        where: eq(page.slug, opts.input.slug),
+        where: sql`lower(${page.slug}) = ${opts.input.slug}`,
       });
       return result?.length > 0 ? false : true;
+    }),
+
+  addCustomDomain: protectedProcedure
+    .input(
+      z.object({ customDomain: z.string().toLowerCase(), pageId: z.number() }),
+    )
+    .mutation(async (opts) => {
+      // TODO Add some check ?
+      await opts.ctx.db
+        .update(page)
+        .set({ customDomain: opts.input.customDomain })
+        .where(eq(page.id, opts.input.pageId))
+        .returning()
+        .get();
     }),
 });

@@ -3,11 +3,11 @@
 import type { Table } from "@tanstack/react-table";
 import { X } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { regionsDict } from "@/data/regions-dictionary";
-import { DataTableDateRangePicker } from "./data-table-date-ranger-picker";
+import { Button } from "@openstatus/ui";
+import { flyRegionsDict } from "@openstatus/utils";
+
+import { codesDict } from "@/data/code-dictionary";
 import { DataTableFacetedFilter } from "./data-table-faceted-filter";
-import { DataTableFilterInput } from "./data-table-filter-input";
 
 interface DataTableToolbarProps<TData> {
   table: Table<TData>;
@@ -21,19 +21,30 @@ export function DataTableToolbar<TData>({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex flex-1 items-center gap-2">
-        <DataTableFilterInput table={table} />
+        {table.getColumn("statusCode") && (
+          <DataTableFacetedFilter
+            column={table.getColumn("statusCode")}
+            title="Status Code"
+            options={Object.keys(codesDict).map((key) => {
+              const typedKey = key as keyof typeof codesDict;
+              return {
+                label: codesDict[typedKey].label,
+                value: codesDict[typedKey].prefix,
+              };
+            })}
+          />
+        )}
         {table.getColumn("region") && (
           <DataTableFacetedFilter
             column={table.getColumn("region")}
             title="Region"
-            options={Object.keys(regionsDict).map((key) => ({
-              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-              // @ts-expect-error
-              label: regionsDict[key].location,
-              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-              // @ts-expect-error
-              value: regionsDict[key].code,
-            }))}
+            options={Object.keys(flyRegionsDict).map((key) => {
+              const typedKey = key as keyof typeof flyRegionsDict;
+              return {
+                label: flyRegionsDict[typedKey].location,
+                value: flyRegionsDict[typedKey].code,
+              };
+            })}
           />
         )}
         {isFiltered && (
@@ -47,7 +58,7 @@ export function DataTableToolbar<TData>({
           </Button>
         )}
       </div>
-      <DataTableDateRangePicker />
+      {/* <DataTableDateRangePicker /> */}
     </div>
   );
 }

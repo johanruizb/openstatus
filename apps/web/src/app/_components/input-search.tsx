@@ -1,16 +1,17 @@
+/// <reference lib="dom" />
+
 "use client";
 
-import * as React from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Command as CommandPrimitive, useCommandState } from "cmdk";
 
 import type { Ping } from "@openstatus/tinybird";
-
 import {
   Command,
   CommandEmpty,
   CommandGroup,
   CommandItem,
-} from "@/components/ui/command";
+} from "@openstatus/ui";
 
 // TODO: once stable, use the shallow route to store the search params inside of the search params
 
@@ -21,13 +22,13 @@ export function InputSearch({
   onSearch(value: Record<string, string>): void;
   events: Ping[];
 }) {
-  const inputRef = React.useRef<HTMLInputElement>(null);
-  const [open, setOpen] = React.useState<boolean>(false);
-  const [inputValue, setInputValue] = React.useState<string>("");
-  const [currentWord, setCurrentWord] = React.useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState<boolean>(false);
+  const [inputValue, setInputValue] = useState<string>("");
+  const [currentWord, setCurrentWord] = useState("");
 
   // TODO: check if there is a move efficient way
-  React.useEffect(() => {
+  useEffect(() => {
     const searchparams = inputValue
       .trim()
       .split(" ")
@@ -43,10 +44,10 @@ export function InputSearch({
         {} as Record<string, string>,
       );
     onSearch(searchparams);
-  }, [onSearch, inputValue]);
+  }, [onSearch, inputValue, currentWord]);
 
   // DEFINE YOUR SEARCH PARAMETERS
-  const search = React.useMemo(
+  const search = useMemo(
     () =>
       events.reduce(
         (prev, curr) => {
@@ -58,7 +59,7 @@ export function InputSearch({
         },
         // defaultState
         { limit: [10, 25, 50], status: [], region: [] } as {
-          status: number[];
+          status: (number | null)[];
           limit: number[];
           region: string[];
         },
@@ -71,7 +72,7 @@ export function InputSearch({
   return (
     <Command
       className="overflow-visible bg-transparent"
-      filter={(value, search) => {
+      filter={(value) => {
         if (value.includes(currentWord.toLowerCase())) return 1;
         return 0;
       }}

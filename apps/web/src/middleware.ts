@@ -1,11 +1,18 @@
-import type { NextFetchEvent, NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { authMiddleware, redirectToSignIn } from "@clerk/nextjs";
 
 import { db, eq } from "@openstatus/db";
-import { user, usersToWorkspaces, workspace } from "@openstatus/db/src/schema";
+import {
+  monitor,
+  user,
+  usersToWorkspaces,
+  workspace,
+} from "@openstatus/db/src/schema";
 
-const before = (req: NextRequest, ev: NextFetchEvent) => {
+import { env } from "./env";
+
+const before = (req: NextRequest) => {
   const url = req.nextUrl.clone();
 
   if (url.pathname.includes("api/trpc")) {
@@ -40,6 +47,16 @@ export const getValidSubdomain = (host?: string | null) => {
       subdomain = candidate;
     }
   }
+  if (host && host.includes("ngrok-free.app")) {
+    return null;
+  }
+  // In case the host is a custom domain
+  if (
+    host &&
+    !(host?.includes(env.NEXT_PUBLIC_URL) || host?.endsWith(".vercel.app"))
+  ) {
+    subdomain = host;
+  }
   return subdomain;
 };
 
@@ -55,48 +72,80 @@ export default authMiddleware({
     "/api/checker/cron/10m",
     "/blog",
     "/blog/(.*)",
+    "/status",
+    "/status/(.*)",
+    "/changelog",
+    "/changelog/(.*)",
+    "/legal/(.*)",
     "/discord",
     "/github",
+    "/oss-friends",
+    "/status-page/(.*)",
+    "/incidents", // used when trying subdomain slug via status.documenso.com/incidents
+    "/incidents/(.*)", // used when trying subdomain slug via status.documenso.com/incidents/123
+    "/verify/(.*)", // used when trying subdomain slug via status.documenso.com/incidents
   ],
-  ignoredRoutes: ["/api/og", "/discord", "github"], // FIXME: we should check the `publicRoutes`
+  ignoredRoutes: ["/api/og", "/discord", "/github", "/status-page/(.*)"], // FIXME: we should check the `publicRoutes`
   beforeAuth: before,
-  async afterAuth(auth, req, evt) {
+  debug: false,
+  async afterAuth(auth, req) {
     // handle users who aren't authenticated
     if (!auth.userId && !auth.isPublicRoute) {
       return redirectToSignIn({ returnBackUrl: req.url });
     }
 
-    // redirect them to organization selection page
-    if (
-      auth.userId &&
-      (req.nextUrl.pathname === "/app" || req.nextUrl.pathname === "/app/")
-    ) {
-      // improve on sign-up if the webhook has not been triggered yet
-      const userQuery = db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, auth.userId))
-        .as("userQuery");
-      const result = await db
-        .select()
-        .from(usersToWorkspaces)
-        .innerJoin(userQuery, eq(userQuery.id, usersToWorkspaces.userId))
-        .all();
-      if (result.length > 0) {
-        const currentWorkspace = await db
+    if (auth.userId) {
+      const pathname = req.nextUrl.pathname;
+      if (pathname.startsWith("/app") && !pathname.startsWith("/app/invite")) {
+        const workspaceSlug = req.nextUrl.pathname.split("/")?.[2];
+        const hasWorkspaceSlug = !!workspaceSlug && workspaceSlug.trim() !== "";
+
+        const allowedWorkspaces = await db
           .select()
-          .from(workspace)
-          .where(eq(workspace.id, result[0].users_to_workspaces.workspaceId))
-          .get();
-        const orgSelection = new URL(
-          `/app/${currentWorkspace.slug}/monitors`,
-          req.url,
-        );
-        return NextResponse.redirect(orgSelection);
-      } else {
-        // return NextResponse.redirect(new URL("/app/onboarding", req.url));
-        // probably redirect to onboarding
-        // or find a way to wait for the webhook
+          .from(usersToWorkspaces)
+          .innerJoin(user, eq(user.id, usersToWorkspaces.userId))
+          .innerJoin(workspace, eq(workspace.id, usersToWorkspaces.workspaceId))
+          .where(eq(user.tenantId, auth.userId))
+          .all();
+
+        // means, we are "not only on `/app` or `/app/`"
+        if (hasWorkspaceSlug) {
+          console.log(">>> Workspace slug", workspaceSlug);
+          const hasAccessToWorkspace = allowedWorkspaces.find(
+            ({ workspace }) => workspace.slug === workspaceSlug,
+          );
+          if (hasAccessToWorkspace) {
+            console.log(">>> Allowed! Attaching to cookie", workspaceSlug);
+            req.cookies.set("workspace-slug", workspaceSlug);
+          } else {
+            console.log(">>> Not allowed, redirecting to /app", workspaceSlug);
+            const appURL = new URL("/app", req.url);
+            return NextResponse.redirect(appURL);
+          }
+        } else {
+          console.log(">>> No workspace slug available");
+          if (allowedWorkspaces.length > 0) {
+            const firstWorkspace = allowedWorkspaces[0].workspace;
+            const { id, slug } = firstWorkspace;
+            console.log(">>> Redirecting to first related workspace", slug);
+            const firstMonitor = await db
+              .select()
+              .from(monitor)
+              .where(eq(monitor.workspaceId, firstWorkspace.id))
+              .get();
+
+            if (!firstMonitor) {
+              console.log(`>>> Redirecting to onboarding`, slug);
+              const onboardingURL = new URL(`/app/${slug}/onboarding`, req.url);
+              return NextResponse.redirect(onboardingURL);
+            }
+
+            console.log(">>> Redirecting to workspace", slug);
+            const monitorURL = new URL(`/app/${slug}/monitors`, req.url);
+            return NextResponse.redirect(monitorURL);
+          }
+          console.log(">>> No action taken");
+        }
       }
     }
   },
@@ -108,5 +157,6 @@ export const config = {
     "/",
     "/(api/webhook|api/trpc)(.*)",
     "/(!api/checker/:path*|!api/og|!api/ping)",
+    "/api/analytics", // used for tracking vercel beta integration click events
   ],
 };

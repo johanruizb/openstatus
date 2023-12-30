@@ -2,9 +2,9 @@ import * as React from "react";
 import type { Column } from "@tanstack/react-table";
 import { Check, PlusCircle } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
+  Badge,
+  Button,
   Command,
   CommandEmpty,
   CommandGroup,
@@ -12,13 +12,12 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-} from "@/components/ui/command";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
+  Separator,
+} from "@openstatus/ui";
+
 import { cn } from "@/lib/utils";
 
 interface DataTableFacetedFilter<TData, TValue> {
@@ -26,7 +25,7 @@ interface DataTableFacetedFilter<TData, TValue> {
   title?: string;
   options: {
     label: string;
-    value: string;
+    value: string | number;
     icon?: React.ComponentType<{ className?: string }>;
   }[];
 }
@@ -37,7 +36,9 @@ export function DataTableFacetedFilter<TData, TValue>({
   options,
 }: DataTableFacetedFilter<TData, TValue>) {
   const facets = column?.getFacetedUniqueValues();
-  const selectedValues = new Set(column?.getFilterValue() as string[]);
+  const selectedValues = new Set(
+    column?.getFilterValue() as (string | number)[],
+  );
 
   return (
     <Popover>

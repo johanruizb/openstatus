@@ -1,50 +1,42 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
-import { analytics, trackAnalytics } from "@openstatus/analytics";
-import { eq } from "@openstatus/db";
+import { and, eq, inArray, sql } from "@openstatus/db";
 import {
-  allMonitorsSchema,
   insertMonitorSchema,
+  insertMonitorStatusSchema,
   monitor,
-  user,
-  usersToWorkspaces,
-  workspace,
+  monitorPeriodicitySchema,
+  monitorStatusTable,
+  monitorsToPages,
+  notification,
+  notificationsToMonitors,
+  selectMonitorSchema,
+  selectMonitorStatusSchema,
+  selectNotificationSchema,
 } from "@openstatus/db/src/schema";
 import { allPlans } from "@openstatus/plans";
 
-import { createTRPCRouter, protectedProcedure } from "../trpc";
-
-const monitorLimit = allPlans.free.limits.monitors;
-const periodicityLimit = allPlans.free.limits.periodicity;
+import { trackNewMonitor } from "../analytics";
+import {
+  createTRPCRouter,
+  cronProcedure,
+  protectedProcedure,
+  publicProcedure,
+} from "../trpc";
 
 export const monitorRouter = createTRPCRouter({
-  createMonitor: protectedProcedure
-    .input(z.object({ data: insertMonitorSchema, workspaceSlug: z.string() }))
+  create: protectedProcedure
+    .input(insertMonitorSchema)
+    .output(selectMonitorSchema)
     .mutation(async (opts) => {
-      const currentWorkspace = await opts.ctx.db
-        .select()
-        .from(workspace)
-        .where(eq(workspace.slug, opts.input.workspaceSlug))
-        .get();
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentWorkspace.id))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      // the user don't have access to this workspace
-      if (!result || !result.users_to_workspaces) return;
+      const monitorLimit = allPlans[opts.ctx.workspace.plan].limits.monitors;
+      const periodicityLimit =
+        allPlans[opts.ctx.workspace.plan].limits.periodicity;
 
       const monitorNumbers = (
         await opts.ctx.db.query.monitor.findMany({
-          where: eq(monitor.workspaceId, currentWorkspace.id),
+          where: eq(monitor.workspaceId, opts.ctx.workspace.id),
         })
       ).length;
 
@@ -58,123 +50,77 @@ export const monitorRouter = createTRPCRouter({
 
       // the user is not allowed to use the cron job
       if (
-        opts.input.data?.periodicity &&
-        !periodicityLimit.includes(opts.input.data?.periodicity)
+        opts.input.periodicity &&
+        !periodicityLimit.includes(opts.input.periodicity)
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "You reached your cron job limits.",
         });
       }
-      const { regions, ...data } = opts.input.data;
+
+      // FIXME: this is a hotfix
+      const { regions, headers, notifications, id, ...data } = opts.input;
 
       const newMonitor = await opts.ctx.db
         .insert(monitor)
         .values({
+          // REMINDER: We should explicitly pass the corresponding attributes
+          // otherwise, unexpected attributes will be passed
           ...data,
-          workspaceId: currentWorkspace.id,
+          workspaceId: opts.ctx.workspace.id,
           regions: regions?.join(","),
+          headers: headers ? JSON.stringify(headers) : undefined,
         })
         .returning()
         .get();
 
-      await analytics.identify(result.users_to_workspaces.userId, {
-        userId: result.users_to_workspaces.userId,
-      });
-      await trackAnalytics({
-        event: "Monitor Created",
+      if (Boolean(notifications.length)) {
+        // We should make sure the user has access to the notifications
+        const allNotifications = await opts.ctx.db.query.notification.findMany({
+          where: inArray(notification.id, notifications),
+        });
+
+        const values = allNotifications.map((notification) => ({
+          monitorId: newMonitor.id,
+          notificationId: notification.id,
+        }));
+
+        await opts.ctx.db.insert(notificationsToMonitors).values(values).run();
+      }
+
+      await trackNewMonitor(opts.ctx.user, {
         url: newMonitor.url,
         periodicity: newMonitor.periodicity,
       });
+
+      return selectMonitorSchema.parse(newMonitor);
     }),
 
-  getMonitorByID: protectedProcedure
+  getMonitorById: protectedProcedure
     .input(z.object({ id: z.number() }))
+    .output(selectMonitorSchema) // REMINDER: use more!
     .query(async (opts) => {
-      const currentMonitor = await opts.ctx.db.query.monitor.findFirst({
-        where: eq(monitor.id, opts.input.id),
-      });
-
-      if (!currentMonitor || !currentMonitor.workspaceId) return;
-      // We make sure user as access to this workspace
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentMonitor.workspaceId))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      if (!result || !result.users_to_workspaces) return;
-
-      return currentMonitor;
-    }),
-
-  updateMonitorDescription: protectedProcedure
-    .input(
-      z.object({
-        id: z.number(),
-        description: z.string(),
-      }),
-    )
-    .mutation(async (opts) => {
-      //  We make sure user as access to this workspace and the monitor
       const currentMonitor = await opts.ctx.db
         .select()
         .from(monitor)
-        .where(eq(monitor.id, opts.input.id))
+        .where(
+          and(
+            eq(monitor.id, opts.input.id),
+            eq(monitor.workspaceId, opts.ctx.workspace.id),
+          ),
+        )
         .get();
-
-      if (!currentMonitor || !currentMonitor.workspaceId) return;
-
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentMonitor.workspaceId))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      if (!result || !result.users_to_workspaces) return;
-
-      await opts.ctx.db
-        .update(monitor)
-        .set({ description: opts.input.description })
-        .where(eq(monitor.id, opts.input.id))
-        .run();
+      return selectMonitorSchema.parse(currentMonitor);
     }),
-  updateMonitor: protectedProcedure
+
+  update: protectedProcedure
     .input(insertMonitorSchema)
     .mutation(async (opts) => {
       if (!opts.input.id) return;
-      const currentMonitor = await opts.ctx.db
-        .select()
-        .from(monitor)
-        .where(eq(monitor.id, opts.input.id))
-        .get();
-      if (!currentMonitor || !currentMonitor.workspaceId) return;
 
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentMonitor.workspaceId))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      if (!result || !result.users_to_workspaces) return;
+      const periodicityLimit =
+        allPlans[opts.ctx.workspace.plan].limits.periodicity;
 
       // the user is not allowed to use the cron job
       if (
@@ -186,110 +132,181 @@ export const monitorRouter = createTRPCRouter({
           message: "You reached your cron job limits.",
         });
       }
-      console.log(opts.input.regions?.join(","));
-      const { regions, ...data } = opts.input;
-      await opts.ctx.db
+
+      const { regions, headers, notifications, ...data } = opts.input;
+
+      const currentMonitor = await opts.ctx.db
         .update(monitor)
-        .set({ ...data, regions: regions?.join(",") })
-        .where(eq(monitor.id, opts.input.id))
+        .set({
+          ...data,
+          regions: regions?.join(","),
+          updatedAt: new Date(),
+          headers: headers ? JSON.stringify(headers) : undefined,
+        })
+        .where(
+          and(
+            eq(monitor.id, opts.input.id),
+            eq(monitor.workspaceId, opts.ctx.workspace.id),
+          ),
+        )
         .returning()
         .get();
+
+      const currentMonitorNotifications = await opts.ctx.db
+        .select()
+        .from(notificationsToMonitors)
+        .where(eq(notificationsToMonitors.monitorId, currentMonitor.id))
+        .all();
+
+      const addedNotifications = notifications.filter(
+        (x) =>
+          !currentMonitorNotifications
+            .map(({ notificationId }) => notificationId)
+            ?.includes(x),
+      );
+
+      if (Boolean(addedNotifications.length)) {
+        const values = addedNotifications.map((notificationId) => ({
+          monitorId: currentMonitor.id,
+          notificationId,
+        }));
+
+        await opts.ctx.db.insert(notificationsToMonitors).values(values).run();
+      }
+
+      const removedNotifications = currentMonitorNotifications
+        .map(({ notificationId }) => notificationId)
+        .filter((x) => !notifications?.includes(x));
+
+      if (Boolean(removedNotifications.length)) {
+        await opts.ctx.db
+          .delete(notificationsToMonitors)
+          .where(
+            and(
+              eq(notificationsToMonitors.monitorId, currentMonitor.id),
+              inArray(
+                notificationsToMonitors.notificationId,
+                removedNotifications,
+              ),
+            ),
+          )
+          .run();
+      }
     }),
-  updateMonitorStatus: protectedProcedure
-    .input(
-      z.object({
-        id: z.number(),
-        status: insertMonitorSchema.pick({ periodicity: true }),
-      }),
-    )
-    .mutation(async (opts) => {
-      const currentMonitor = await opts.ctx.db
-        .select()
-        .from(monitor)
-        .where(eq(monitor.id, opts.input.id))
-        .get();
-      if (!currentMonitor || !currentMonitor.workspaceId) return;
 
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentMonitor.workspaceId))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      if (!result.users_to_workspaces) return;
-
-      await opts.ctx.db
-        .update(monitor)
-        .set(opts.input.status)
-        .where(eq(monitor.id, opts.input.id))
-        .run();
-    }),
-
-  deleteMonitor: protectedProcedure
+  delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async (opts) => {
-      const currentMonitor = await opts.ctx.db
+      const monitorToDelete = await opts.ctx.db
         .select()
         .from(monitor)
-        .where(eq(monitor.id, opts.input.id))
+        .where(
+          and(
+            eq(monitor.id, opts.input.id),
+            eq(monitor.workspaceId, opts.ctx.workspace.id),
+          ),
+        )
         .get();
-      if (!currentMonitor || !currentMonitor.workspaceId) return;
-
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentMonitor.workspaceId))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-
-      if (!result || !result.users_to_workspaces) return;
+      if (!monitorToDelete) return;
 
       await opts.ctx.db
         .delete(monitor)
-        .where(eq(monitor.id, currentMonitor.id))
+        .where(eq(monitor.id, monitorToDelete.id))
         .run();
     }),
+
   getMonitorsByWorkspace: protectedProcedure
-    .input(z.object({ workspaceSlug: z.string() }))
+    .output(z.array(selectMonitorSchema))
     .query(async (opts) => {
-      const currentUser = opts.ctx.db
-        .select()
-        .from(user)
-        .where(eq(user.tenantId, opts.ctx.auth.userId))
-        .as("currentUser");
-
-      const currentWorkspace = await opts.ctx.db
-        .select()
-        .from(workspace)
-        .where(eq(workspace.slug, opts.input.workspaceSlug))
-        .get();
-      const result = await opts.ctx.db
-        .select()
-        .from(usersToWorkspaces)
-        .where(eq(usersToWorkspaces.workspaceId, currentWorkspace.id))
-        .innerJoin(currentUser, eq(usersToWorkspaces.userId, currentUser.id))
-        .get();
-      // the user don't have access to this workspace
-      if (!result || !result.users_to_workspaces) return;
-
       const monitors = await opts.ctx.db
         .select()
         .from(monitor)
-        .where(eq(monitor.workspaceId, currentWorkspace.id))
+        .where(eq(monitor.workspaceId, opts.ctx.workspace.id))
         .all();
-      // const selectMonitorsArray = selectMonitorSchema.array();
 
-      return allMonitorsSchema.parse(monitors);
+      return z.array(selectMonitorSchema).parse(monitors);
+    }),
+
+  getMonitorsForPeriodicity: cronProcedure
+    .input(z.object({ periodicity: monitorPeriodicitySchema }))
+    .query(async (opts) => {
+      const result = await opts.ctx.db
+        .select()
+        .from(monitor)
+        .where(
+          and(
+            eq(monitor.periodicity, opts.input.periodicity),
+            eq(monitor.active, true),
+          ),
+        )
+        .all();
+      return z.array(selectMonitorSchema).parse(result);
+    }),
+
+  getMonitorStatusByMonitorId: cronProcedure
+    .input(z.object({ monitorId: z.number() }))
+    .query(async (opts) => {
+      const result = await opts.ctx.db
+        .select()
+        .from(monitorStatusTable)
+        .where(eq(monitorStatusTable.monitorId, opts.input.monitorId))
+        .all();
+      return z.array(selectMonitorStatusSchema).parse(result);
+    }),
+
+  // FOR TESTING
+  upsertMonitorStatus: cronProcedure
+    .input(insertMonitorStatusSchema)
+    .mutation(async (opts) => {
+      const { status, region, monitorId } = opts.input;
+      await opts.ctx.db
+        .insert(monitorStatusTable)
+        .values({ status, region, monitorId: Number(monitorId) })
+        .onConflictDoUpdate({
+          target: [monitorStatusTable.monitorId, monitorStatusTable.region],
+          set: { status, updatedAt: new Date() },
+        });
+    }),
+
+  getAllPagesForMonitor: cronProcedure
+    .input(z.object({ monitorId: z.number() }))
+    .query(async (opts) => {
+      const allPages = await opts.ctx.db
+        .select()
+        .from(monitorsToPages)
+        .where(eq(monitorsToPages.monitorId, opts.input.monitorId))
+        .all();
+      return allPages;
+    }),
+
+  // rename to getActiveMonitorsCount
+  getTotalActiveMonitors: publicProcedure.query(async (opts) => {
+    const monitors = await opts.ctx.db
+      .select({ count: sql<number>`count(*)` })
+      .from(monitor)
+      .where(eq(monitor.active, true))
+      .all();
+    if (monitors.length === 0) return 0;
+    return monitors[0].count;
+  }),
+
+  // TODO: return the notifications inside of the `getMonitorById` like we do for the monitors on a status page
+  getAllNotificationsForMonitor: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    // .output(selectMonitorSchema)
+    .query(async (opts) => {
+      const data = await opts.ctx.db
+        .select()
+        .from(notificationsToMonitors)
+        .innerJoin(
+          notification,
+          and(
+            eq(notificationsToMonitors.notificationId, notification.id),
+            eq(notification.workspaceId, opts.ctx.workspace.id),
+          ),
+        )
+        .where(eq(notificationsToMonitors.monitorId, opts.input.id))
+        .all();
+      return data.map((d) => selectNotificationSchema.parse(d.notification));
     }),
 });

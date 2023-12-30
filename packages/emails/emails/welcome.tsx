@@ -15,8 +15,9 @@ const WelcomeEmail = () => {
           building it.
           <br />
           <br />
-          If you have any questions about setting up your status page, I'm here
-          to help.
+          What kind of apps are going to monitor?
+          <br />
+          How do you handle your incidents?
           <br />
           <br />
           Thank you,
@@ -25,7 +26,7 @@ const WelcomeEmail = () => {
           Thibault Le Ouay Ducasse
           <br />
           <br />⭐ Star us on{" "}
-          <Link href="https://github.com/openstatushq/openstatus">Github</Link>
+          <Link href="https://github.com/openstatushq/openstatus">GitHub</Link>
           <br />
           🚀 Visit our website{" "}
           <Link href="https://www.openstatus.dev">OpenStatus.dev</Link>

@@ -1,6 +1,8 @@
 /* eslint-disable @next/next/no-img-element */
 import { ImageResponse } from "next/server";
 
+import { DESCRIPTION, TITLE } from "@/app/shared-metadata";
+
 export const runtime = "edge";
 
 const DEFAULT_URL = process.env.VERCEL_URL
@@ -11,9 +13,6 @@ const size = {
   width: 1200,
   height: 630,
 };
-
-const TITLE = "Open Status";
-const DESCRIPTION = "An Open Source Alternative for your next Status Page";
 
 const interRegular = fetch(
   new URL("../../../../public/fonts/Inter-Regular.ttf", import.meta.url),
@@ -64,22 +63,24 @@ export async function GET(req: Request) {
               "radial-gradient(farthest-corner at 100px 100px, #cbd5e1, white 80%)", // tbd: switch color position
           }}
         ></div>
-        <div tw="flex flex-col px-24">
-          <div tw="flex flex-col px-12">
-            {/* lineClamp not working... */}
-            <h1 style={{ fontFamily: "Cal", lineClamp: "2" }} tw="text-6xl">
-              {title}
-            </h1>
-            <p style={{ lineClamp: "2" }} tw="text-slate-600 text-3xl">
-              {description}
-            </p>
+        <div tw="flex flex-col h-full justify-between px-24">
+          <div tw="flex flex-col flex-1 justify-end">
+            <div tw="flex flex-col px-12">
+              {/* lineClamp not working... */}
+              <h1 style={{ fontFamily: "Cal", lineClamp: "2" }} tw="text-6xl">
+                {title}
+              </h1>
+              <p style={{ lineClamp: "2" }} tw="text-slate-600 text-3xl">
+                {description}
+              </p>
+            </div>
           </div>
           {image ? (
-            <div tw="flex justify-center mt-8 -mb-16 shadow-2xl">
+            <div tw="flex justify-center shadow-2xl mt-1">
               <img
                 alt=""
-                style={{ objectFit: "cover" }}
-                tw="flex w-full h-80 border-2 rounded-xl"
+                style={{ objectFit: "cover", height: 350 }} // h-80 = 320px
+                tw="flex w-full border-2 rounded-xl"
                 src={new URL(image, DEFAULT_URL).toString()}
               />
             </div>

@@ -1,14 +1,12 @@
-import { Client } from "@upstash/qstash/cloudflare";
-import { z } from "zod";
+import type { NextRequest } from "next/server";
+import type { SignedInAuthObject } from "@clerk/nextjs/api";
+import { CloudTasksClient } from "@google-cloud/tasks";
+import type { google } from "@google-cloud/tasks/build/protos/protos";
+import type { z } from "zod";
 
-import { and, db, eq } from "@openstatus/db";
-import {
-  monitor,
-  monitorsToPages,
-  RegionEnum,
-  selectMonitorSchema,
-} from "@openstatus/db/src/schema";
-import { availableRegions } from "@openstatus/tinybird";
+import { createTRPCContext } from "@openstatus/api";
+import { edgeRouter } from "@openstatus/api/src/edge";
+import { selectMonitorSchema } from "@openstatus/db/src/schema";
 
 import { env } from "@/env";
 import type { payloadSchema } from "../schema";
@@ -16,7 +14,6 @@ import type { payloadSchema } from "../schema";
 const periodicityAvailable = selectMonitorSchema.pick({ periodicity: true });
 
 // FIXME: do coerce in zod instead
-const currentRegions = z.string().transform((val) => val.split(","));
 
 const DEFAULT_URL = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
@@ -29,85 +26,92 @@ export const isAuthorizedDomain = (url: string) => {
 
 export const cron = async ({
   periodicity,
-}: z.infer<typeof periodicityAvailable>) => {
-  const c = new Client({
-    token: env.QSTASH_TOKEN,
+  req,
+}: z.infer<typeof periodicityAvailable> & { req: NextRequest }) => {
+  const client = new CloudTasksClient({
+    projectId: env.GCP_PROJECT_ID,
+    credentials: {
+      client_email: process.env.GCP_CLIENT_EMAIL,
+      private_key: env.GCP_PRIVATE_KEY.replaceAll("\\n", "\n"),
+    },
   });
-  console.info(`Start cron for ${periodicity}`);
+  const parent = client.queuePath(
+    env.GCP_PROJECT_ID,
+    env.GCP_LOCATION,
+    periodicity,
+  );
+
+  console.log(`Start cron for ${periodicity}`);
   const timestamp = Date.now();
-  // FIXME: Wait until db is ready
-  const result = await db
-    .select()
-    .from(monitor)
-    .where(and(eq(monitor.periodicity, periodicity), eq(monitor.active, true)))
-    .all();
+
+  const ctx = createTRPCContext({ req, serverSideCall: true });
+  ctx.auth = { userId: "cron" } as SignedInAuthObject;
+  const caller = edgeRouter.createCaller(ctx);
+
+  const monitors = await caller.monitor.getMonitorsForPeriodicity({
+    periodicity: periodicity,
+  });
 
   const allResult = [];
 
-  for (const row of result) {
-    // could be improved with a single query
-    const allPages = await db
-      .select()
-      .from(monitorsToPages)
-      .where(eq(monitorsToPages.monitorId, row.id))
-      .all();
+  for (const row of monitors) {
+    // TODO: remove - this is not used anymore | remember to update the `type Payload`
+    const allPages = await caller.monitor.getAllPagesForMonitor({
+      monitorId: row.id,
+    });
+    const selectedRegions = row.regions.length > 1 ? row.regions : ["auto"];
 
-    if (row.regions.length === 0) {
+    const monitorStatus = await caller.monitor.getMonitorStatusByMonitorId({
+      monitorId: row.id,
+    });
+
+    for (const region of selectedRegions) {
       const payload: z.infer<typeof payloadSchema> = {
         workspaceId: String(row.workspaceId),
         monitorId: String(row.id),
         url: row.url,
+        method: row.method || "GET",
         cronTimestamp: timestamp,
+        body: row.body,
+        headers: row.headers,
         pageIds: allPages.map((p) => String(p.pageId)),
+        status:
+          monitorStatus.find(({ region }) => region === region)?.status ||
+          "active",
       };
 
-      // TODO: fetch + try - catch + retry once
-      const result = c.publishJSON({
-        url: `${DEFAULT_URL}/api/checker/regions/auto`,
-        body: payload,
-        delay: Math.random() * 90,
-      });
-      allResult.push(result);
-    } else {
-      const allMonitorsRegions = currentRegions.parse(row.regions);
-      for (const region of allMonitorsRegions) {
-        const payload: z.infer<typeof payloadSchema> = {
-          workspaceId: String(row.workspaceId),
-          monitorId: String(row.id),
-          url: row.url,
-          cronTimestamp: timestamp,
-          pageIds: allPages.map((p) => String(p.pageId)),
-        };
-
-        const result = c.publishJSON({
-          url: `${DEFAULT_URL}/api/checker/regions/${region}`,
-          body: payload,
-        });
-        allResult.push(result);
-      }
-    }
-  }
-  // our first legacy monitor
-  if (periodicity === "10m") {
-    // Right now we are just checking the ping endpoint
-    for (const region of availableRegions) {
-      const payload: z.infer<typeof payloadSchema> = {
-        workspaceId: "openstatus",
-        monitorId: "openstatusPing",
-        url: `${DEFAULT_URL}/api/ping`,
-        cronTimestamp: timestamp,
-        pageIds: ["openstatus"],
+      // const task: google.cloud.tasks.v2beta3.ITask = {
+      //   httpRequest: {
+      //     headers: {
+      //       "Content-Type": "application/json", // Set content type to ensure compatibility your application's request parsing
+      //       ...(region !== "auto" && { "fly-prefer-region": region }), // Specify the region you want the request to be sent to
+      //       Authorization: `Basic ${env.CRON_SECRET}`,
+      //     },
+      //     httpMethod: "POST",
+      //     url: "https://api.openstatus.dev/checkerV2",
+      //     body: Buffer.from(JSON.stringify(payload)).toString("base64"),
+      //   },
+      // };
+      const newTask: google.cloud.tasks.v2beta3.ITask = {
+        httpRequest: {
+          headers: {
+            "Content-Type": "application/json", // Set content type to ensure compatibility your application's request parsing
+            ...(region !== "auto" && { "fly-prefer-region": region }), // Specify the region you want the request to be sent to
+            Authorization: `Basic ${env.CRON_SECRET}`,
+          },
+          httpMethod: "POST",
+          url: "https://openstatus-checker.fly.dev/checker",
+          body: Buffer.from(JSON.stringify(payload)).toString("base64"),
+        },
       };
 
-      // TODO: fetch + try - catch + retry once
-      const result = c.publishJSON({
-        url: `${DEFAULT_URL}/api/checker/regions/${region}`,
-        body: payload,
-        delay: Math.random() * 90,
-      });
-      allResult.push(result);
+      // const request = { parent: parent, task: task };
+      // const [response] = await client.createTask(request);
+      const request = { parent: parent, task: newTask };
+      const [response] = await client.createTask(request);
+      allResult.push(response);
     }
   }
   await Promise.all(allResult);
-  console.info(`End cron for ${periodicity} with ${allResult.length} jobs`);
+  console.log(`End cron for ${periodicity} with ${allResult.length} jobs`);
 };

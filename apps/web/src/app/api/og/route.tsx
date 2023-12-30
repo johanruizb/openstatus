@@ -1,6 +1,13 @@
+import { headers } from "next/headers";
 import { ImageResponse } from "next/server";
 
+import { DESCRIPTION, TITLE } from "@/app/shared-metadata";
 import { getMonitorListData } from "@/lib/tb";
+import {
+  addBlackListInfo,
+  getStatus,
+  getTotalUptimeString,
+} from "@/lib/tracker";
 import { cn, formatDate } from "@/lib/utils";
 
 export const runtime = "edge";
@@ -10,9 +17,8 @@ const size = {
   height: 630,
 };
 
-const TITLE = "Open Status";
-const DESCRIPTION = "An Open Source Alternative for your next Status Page";
 const LIMIT = 40;
+const currentTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const interRegular = fetch(
   new URL("../../../public/fonts/Inter-Regular.ttf", import.meta.url),
@@ -41,24 +47,21 @@ export async function GET(req: Request) {
     ? searchParams.get("monitorId")
     : undefined;
 
+  const headersList = headers();
+  const timezone = headersList.get("x-vercel-ip-timezone") || currentTimezone;
+
   // currently, we only show the tracker for a single(!) monitor
   const data =
     (monitorId &&
       (await getMonitorListData({
         monitorId,
-        groupBy: "day",
         limit: LIMIT,
+        timezone,
       }))) ||
     [];
 
-  const uptime = data?.reduce(
-    (prev, curr) => {
-      prev.ok += curr.ok;
-      prev.count += curr.count;
-      return prev;
-    },
-    { ok: 0, count: 0 },
-  );
+  const _data = addBlackListInfo(data);
+  const uptime = getTotalUptimeString(data);
 
   return new ImageResponse(
     (
@@ -84,13 +87,11 @@ export async function GET(req: Request) {
             {title}
           </h1>
           <p tw="text-slate-600 text-3xl">{description}</p>
-          {data && data.length > 0 ? (
+          {Boolean(data.length) && Boolean(_data.length) ? (
             <div tw="flex flex-col w-full mt-6">
               <div tw="flex flex-row items-center justify-between -mb-1 text-black font-light">
                 <p tw="">{formatDate(new Date())}</p>
-                <p tw="mr-1">
-                  {((uptime.ok / uptime.count) * 100).toFixed(2)}% uptime
-                </p>
+                <p tw="mr-1">{uptime}</p>
               </div>
               <div tw="flex flex-row relative">
                 {/* Empty State */}
@@ -102,9 +103,18 @@ export async function GET(req: Request) {
                     ></div>
                   );
                 })}
-                <div tw="flex flex-row absolute right-0">
-                  {data.map((item, i) => {
+                <div tw="flex flex-row-reverse absolute right-0">
+                  {_data.map((item, i) => {
                     const { variant } = getStatus(item.ok / item.count);
+                    const isBlackListed = Boolean(item.blacklist);
+                    if (isBlackListed) {
+                      return (
+                        <div
+                          key={i}
+                          tw="h-16 w-3 rounded-full mr-1 bg-green-400"
+                        />
+                      );
+                    }
                     return (
                       <div
                         key={i}
@@ -152,12 +162,3 @@ export async function GET(req: Request) {
     },
   );
 }
-
-// FIXME this is a temporary solution (taken from Tracker)
-const getStatus = (
-  ratio: number,
-): { label: string; variant: "up" | "degraded" | "down" } => {
-  if (ratio >= 0.98) return { label: "Operational", variant: "up" };
-  if (ratio >= 0.5) return { label: "Degraded", variant: "degraded" };
-  return { label: "Downtime", variant: "down" };
-};

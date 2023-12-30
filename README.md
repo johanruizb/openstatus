@@ -1,10 +1,9 @@
 <p align="center" style="margin-top: 120px">
 
-  <h3 align="center">The Open-source Status Page and Alerting System
-   </h3>
+  <h3 align="center">OpenStatus</h3>
 
   <p align="center">
-    The Atlassian's Statuspage Open Source Alternative.
+    The Open-Source monitoring platform with incident management.
     <br />
     <a href="https://www.openstatus.dev"><strong>Learn more »</strong></a>
     <br />
@@ -19,23 +18,23 @@
   </p>
 </p>
 
-## About OpenStatus
+## About OpenStatus 🏓
 
-OpenStatus is open-source status page and alerting system. We are building it
-publicly for everyone to see our progress. We believe great softwares are built
-this way.
+OpenStatus is open-source synthetic monitoring platform with beautiful status
+page and incident management. We are building it publicly for everyone to see
+our progress. We believe great softwares are built this way.
 
 You can choose to host it yourself or use our hosted version at
 [openstatus.dev](https://www.openstatus.dev)
 
-## Contact us
+## Contact us 💌
 
 If you want to learn more about this project or have any questions, book a call
-with us or send us an email at
-[hello@openstatus.dev](mailto:hello@openstatus.dev) <br/><br/>
-<a href="https://cal.com/thibault-openstatus/30min"><img alt="Book us with Cal.com" src="https://cal.com/book-with-cal-dark.svg" /></a>
+with us or send us an email at [ping@openstatus.dev](mailto:ping@openstatus.dev)
+<br/><br/>
+<a href="https://cal.com/team/openstatus/30min"><img alt="Book us with Cal.com" src="https://cal.com/book-with-cal-dark.svg" /></a>
 
-## Built with
+## Built with 🛠️
 
 - [Next.js](https://nextjs.org/)
 - [Tailwind CSS](https://tailwindcss.com/)
@@ -46,7 +45,7 @@ with us or send us an email at
 - [clerk](https://clerk.com/)
 - [Resend](https://resend.com/)
 
-## Getting Started
+## Getting Started 🚀
 
 ### Requirements
 
@@ -91,12 +90,19 @@ the link you get after entering:
 $ ngrok http 3000
 ```
 
-## Roadmap
+### Videos
+
+Videos to better understand the OpenStatus codebase:
+
+- [The code behind OpenStatus and how it uses Turbopack](https://youtube.com/watch?v=PYfSJATE8v8).
+- [Drop Betterstack and go open source](https://www.youtube.com/watch?v=PKag0USy3eQ)
+
+## Roadmap 🗺️
 
 Here's our [roadmap](https://openstatus.productlane.com/roadmap) feel free to
 contribute to it.
 
-## Contributing
+## Contributing 🤝
 
 If you want to help us building the best status page and alerting system, you
 can check our
@@ -109,3 +115,7 @@ can check our
 </a>
 
 Made with [Contrib.rocks](https://contrib.rocks)
+
+### Stats
+
+![Alt](https://repobeats.axiom.co/api/embed/180eee159c0128f683a30f15f51ac35bdbd9fa44.svg "Repobeats analytics image")

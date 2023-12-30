@@ -18,16 +18,33 @@ export const pagesConfig: Page[] = [
   },
   {
     title: "Status Pages",
-    description: "Wher you can see all the pages.",
+    description: "Where you can see all the pages.",
     href: "/status-pages",
     icon: "panel-top",
   },
   {
-    title: "Incidents",
+    title: "Status Reports",
     description: "War room where you handle the incidents.",
-    href: "/incidents",
-    icon: "siren",
-    disabled: true,
+    href: "/status-reports",
+    icon: "megaphone",
   },
+  {
+    title: "Notifications",
+    description: "Where you can see all the notifications.",
+    href: "/notifications",
+    icon: "bell",
+  },
+  {
+    title: "Settings",
+    description: "Your workspace settings",
+    href: "/settings",
+    icon: "cog",
+  },
+  // {
+  //   title: "Integrations",
+  //   description: "Where you can see all the integrations.",
+  //   href: "/integrations",
+  //   icon: "plug",
+  // },
   // ...
 ];

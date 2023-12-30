@@ -1,110 +1,90 @@
 import * as z from "zod";
 
-/**
- * All available Vercel (AWS) regions
- */
-export const availableRegions = [
-  "arn1",
-  "bom1",
-  "cdg1",
-  "cle1",
-  "cpt1",
-  "dub1",
-  "fra1",
-  "gru1",
-  "hkg1",
-  "hnd1",
-  "iad1",
-  "icn1",
-  "kix1",
-  "lhr1",
-  "pdx1",
-  "sfo1",
-  "sin1",
-  "syd1",
-] as const;
+import { availableRegions } from "@openstatus/utils";
 
 /**
- * Values for the datasource ping_response__v2
+ * Values for the datasource ping_response
  */
 export const tbIngestPingResponse = z.object({
-  id: z.string(),
   workspaceId: z.string(),
-  pageId: z.string(),
   monitorId: z.string(),
   timestamp: z.number().int(),
-  statusCode: z.number().int(),
-  latency: z.number().int(), // in ms
+  statusCode: z.number().int().nullable().optional(),
+  latency: z.number(), // in ms
   cronTimestamp: z.number().int().optional().nullable().default(Date.now()),
   url: z.string().url(),
-  metadata: z.string().optional().default("{}").nullable(),
-  region: z.string().min(4).max(4),
+  region: z.string().min(3).max(4), // REMINDER: won't work on fy
+  message: z.string().nullable().optional(),
 });
 
 /**
- * Values from the pip response_list__v1
+ * Values from the pipe response_list
  */
 export const tbBuildResponseList = z.object({
-  id: z.string(),
   workspaceId: z.string(),
-  pageId: z.string(),
   monitorId: z.string(),
   timestamp: z.number().int(),
-  statusCode: z.number().int(),
+  statusCode: z.number().int().nullable().default(null),
   latency: z.number().int(), // in ms
   cronTimestamp: z.number().int().nullable().default(Date.now()),
   url: z.string().url(),
-  metadata: z
-    .string()
-    .default("{}")
-    .transform((t) => JSON.parse(t))
-    .nullable(),
   region: z.enum(availableRegions),
+  message: z.string().nullable().optional(),
 });
 
 /**
- * Params for pipe response_list__v1
+ * Params for pipe response_list
  */
 export const tbParameterResponseList = z.object({
   monitorId: z.string().default(""), // REMINDER: remove default once alpha
   fromDate: z.number().int().default(0), // always start from a date
   toDate: z.number().int().optional(),
-  limit: z.number().int().optional().default(2500), // one day has 2448 pings (17 (regions) * 6 (per hour) * 24)
+  limit: z.number().int().optional().default(7500), // one day has 2448 pings (17 (regions) * 6 (per hour) * 24) * 3 days for historical data
   region: z.enum(availableRegions).optional(),
   cronTimestamp: z.number().int().optional(),
 });
 
 /**
- * All `groupBy` options for the monitoring list
- * - "day" will aggregate data within the same day
- * - "cron" will get data from single cron job
- */
-export const groupByRange = ["day", "cron"] as const;
-
-/**
- * Params for pipe monitor_list__v0
+ * Params for pipe status_timezone
  */
 export const tbParameterMonitorList = z.object({
-  siteId: z.string().optional().default("openstatus"), // REMINDER: remove default once alpha
-  monitorId: z.string().optional().default(""), // REMINDER: remove default once alpha
-  limit: z.number().int().optional().default(2500), // one day has 2448 pings (17 (regions) * 6 (per hour) * 24)
-  cronTimestamp: z.number().int().optional(),
-  groupBy: z.enum(groupByRange).optional(), // TODO: rename to frequency: z.enum(["1d", "auto"]) - where "auto" the default periodicity setup
+  monitorId: z.string(),
+  timezone: z.string().optional(),
+  limit: z.number().int().default(46).optional(), // 46 days
 });
 
 /**
- * Values from the pip monitor_list__v0
+ * Values from the pipe status_timezone
  */
 export const tbBuildMonitorList = z.object({
   count: z.number().int(),
   ok: z.number().int(),
-  avgLatency: z.number().int(), // in ms
-  cronTimestamp: z.number().int(),
+  avgLatency: z.number().int(),
+  day: z.string().transform((val) => {
+    // That's a hack because clickhouse return the date in UTC but in shitty format (2021-09-01 00:00:00)
+    return new Date(`${val} GMT`).toISOString();
+  }),
+});
+
+/**
+ * Params for pipe home_stats
+ */
+export const tbParameterHomeStats = z.object({
+  cronTimestamp: z.number().int().optional(),
+  period: z.enum(["total", "1h", "10m"]).optional(),
+});
+
+/**
+ * Values from the pipe home_stats
+ */
+export const tbBuildHomeStats = z.object({
+  count: z.number().int(),
 });
 
 export type Ping = z.infer<typeof tbBuildResponseList>;
 export type Region = (typeof availableRegions)[number]; // TODO: rename type AvailabeRegion
 export type Monitor = z.infer<typeof tbBuildMonitorList>;
+export type HomeStats = z.infer<typeof tbBuildHomeStats>;
 export type ResponseListParams = z.infer<typeof tbParameterResponseList>;
 export type MonitorListParams = z.infer<typeof tbParameterMonitorList>;
-export type GroupByRange = (typeof groupByRange)[number];
+export type HomeStatsParams = z.infer<typeof tbParameterHomeStats>;

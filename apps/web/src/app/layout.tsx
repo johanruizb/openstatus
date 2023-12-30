@@ -3,11 +3,16 @@ import "@/styles/globals.css";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import LocalFont from "next/font/local";
-import { ClerkProvider } from "@clerk/nextjs";
-import PlausibleProvider from "next-plausible";
 
+import { Toaster } from "@openstatus/ui";
+
+import {
+  defaultMetadata,
+  ogMetadata,
+  twitterMetadata,
+} from "@/app/shared-metadata";
 import { TailwindIndicator } from "@/components/tailwind-indicator";
-import { Toaster } from "@/components/ui/toaster";
+import { ThemeProvider } from "@/components/theme-provider";
 import Background from "./_components/background";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -17,24 +22,13 @@ const calSans = LocalFont({
   variable: "--font-calsans",
 });
 
-const TITLE = "OpenStatus";
-const DESCRIPTION = "Open-Source alternative to your current status page.";
-
 export const metadata: Metadata = {
-  title: TITLE,
-  description: DESCRIPTION,
-  metadataBase: new URL("https://www.openstatus.dev"),
+  ...defaultMetadata,
   twitter: {
-    images: [`/api/og`],
-    card: "summary_large_image",
-    title: TITLE,
-    description: DESCRIPTION,
+    ...twitterMetadata,
   },
   openGraph: {
-    type: "website",
-    images: [`/api/og`],
-    title: TITLE,
-    description: DESCRIPTION,
+    ...ogMetadata,
   },
 };
 
@@ -45,17 +39,14 @@ export default function RootLayout({
 }) {
   // If you want to develop locally without Clerk,  Comment the provider below
   return (
-    <ClerkProvider>
-      <html lang="en">
-        {/* TODO: remove plausible from root layout (to avoid tracking subdomains) */}
-        <PlausibleProvider domain="openstatus.dev">
-          <body className={`${inter.className} ${calSans.variable}`}>
-            <Background>{children}</Background>
-            <Toaster />
-            <TailwindIndicator />
-          </body>
-        </PlausibleProvider>
-      </html>
-    </ClerkProvider>
+    <html lang="en">
+      <body className={`${inter.className} ${calSans.variable}`}>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+          <Background>{children}</Background>
+          <Toaster />
+          <TailwindIndicator />
+        </ThemeProvider>
+      </body>
+    </html>
   );
 }

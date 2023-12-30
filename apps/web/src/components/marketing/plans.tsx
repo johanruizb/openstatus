@@ -1,90 +1,35 @@
 import Link from "next/link";
 import { Check } from "lucide-react";
 
+import { Button } from "@openstatus/ui";
+
+import { Shell } from "@/components/dashboard/shell";
+import { LoadingAnimation } from "@/components/loading-animation";
+import type { PlanProps } from "@/config/plans";
+import { plansConfig } from "@/config/plans";
 import { cn } from "@/lib/utils";
-import { Shell } from "../dashboard/shell";
-import { Button } from "../ui/button";
-
-interface Plan {
-  title: string;
-  description: string;
-  cost: number | string;
-  features: string[];
-  action?: {
-    text: string;
-    link: string;
-  };
-  disabled?: boolean;
-}
-
-const plans: Record<"hobby" | "pro" | "enterprise", Plan> = {
-  hobby: {
-    title: "Hobby",
-    description: "Get started now and upgrade once reaching the limits.",
-    cost: 0,
-    features: [
-      "5 monitors",
-      "1 status page",
-      "subdomain",
-      "10m, 30m, 1h checks",
-    ],
-    action: {
-      text: "Start now",
-      link: "/app",
-    },
-  },
-  pro: {
-    title: "Pro",
-    description: "Scale and build monitors for all your services.",
-    cost: 29,
-    features: [
-      "20 monitors",
-      "5 status page",
-      "custom domain",
-      "1m, 5m, 10m, 30m, 1h checks",
-      "5 team members",
-    ],
-    action: {
-      text: "Coming soon",
-      link: "/",
-    },
-    disabled: true,
-  },
-  enterprise: {
-    title: "Enterprise",
-    description: "Dedicated support and needs for your company.",
-    cost: "Lets talk",
-    features: [],
-    action: {
-      text: "Schedule call",
-      link: "https://cal.com/thibault-openstatus/30min",
-    },
-  },
-};
 
 export function Plans() {
   return (
-    <Shell>
-      <div className="grid gap-4 md:grid-cols-2 md:gap-0">
-        <Plan
-          {...plans.hobby}
-          className="md:border-border/50 md:border-r md:pr-4"
-        />
-        <Plan {...plans.pro} className="md:pl-4" />
-        <Plan
-          {...plans.enterprise}
-          className="md:border-border/50 col-span-full md:mt-4 md:border-t md:pt-4"
-        />
-      </div>
+    <Shell className="grid gap-4 md:grid-cols-2 md:gap-0">
+      <Plan
+        {...plansConfig.free}
+        className="md:border-border/50 md:border-r md:pr-4"
+      />
+      <Plan {...plansConfig.pro} className="md:pl-4" />
+      <Plan
+        {...plansConfig.enterprise}
+        className="md:border-border/50 col-span-full md:mt-4 md:border-t md:pt-4"
+      />
     </Shell>
   );
 }
 
-interface Props extends Plan {
+interface Props extends PlanProps {
   className?: string;
 }
 
-function Plan({
+export function Plan({
   title,
   description,
   cost,
@@ -92,6 +37,7 @@ function Plan({
   action,
   disabled,
   className,
+  loading,
 }: Props) {
   return (
     <div
@@ -109,10 +55,14 @@ function Plan({
             <p className="text-muted-foreground">{description}</p>
           </div>
           <p className="shrink-0">
-            <span className="font-cal text-2xl">{cost}</span>
             {typeof cost === "number" ? (
-              <span className="text-muted-foreground font-light">/month</span>
-            ) : null}
+              <>
+                <span className="font-cal text-2xl">{cost} €</span>
+                <span className="text-muted-foreground font-light">/month</span>
+              </>
+            ) : (
+              <span className="font-cal text-2xl">{cost}</span>
+            )}
           </p>
         </div>
         <ul className="border-border/50 grid divide-y py-2">
@@ -127,13 +77,20 @@ function Plan({
           ))}
         </ul>
       </div>
-      <div>
-        {action ? (
-          <Button asChild size="sm">
-            <Link href={action.link}>{action.text}</Link>
-          </Button>
-        ) : null}
-      </div>
+      {action ? (
+        <div>
+          {"link" in action ? (
+            <Button asChild>
+              <Link href={action.link}>{action.text}</Link>
+            </Button>
+          ) : null}
+          {"onClick" in action ? (
+            <Button onClick={action.onClick} disabled={disabled || loading}>
+              {loading ? <LoadingAnimation /> : action.text}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
